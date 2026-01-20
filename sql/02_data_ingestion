@@ -1,0 +1,129 @@
+-- =====================================================
+-- 02_data_ingestion.sql
+-- AML | Sanctions | KYC — AML Data Analyst Portfolio Project
+-- Purpose: Load data and perform initial validation checks
+-- Author: Savio Kedari
+-- =====================================================
+
+USE aml_project;
+
+-- STEP 1: Load Countries Reference Data
+
+LOAD DATA INFILE 'C:\ProgramData\MySQL\MySQL Server 8.0\Uploads\countries.csv'
+INTO TABLE countries
+FIELDS TERMINATED BY ','
+OPTIONALLY ENCLOSED BY '"'
+LINES TERMINATED BY '\r\n'
+IGNORE 1 LINES
+(Country_ID, Country, Risk, Sanctions_Authority, Sanction_Type, Prohibitions, Exemptions, Rationale);
+
+-- STEP 2: Load Customers Data
+
+LOAD DATA INFILE 'C:\ProgramData\MySQL\MySQL Server 8.0\Uploads\customers.csv'
+INTO TABLE customers
+FIELDS TERMINATED BY ','
+ENCLOSED BY '"'
+LINES TERMINATED BY '\n'
+IGNORE 1 ROWS;
+
+-- STEP 3: Load Transactions Data
+
+LOAD DATA INFILE 'C:\ProgramData\MySQL\MySQL Server 8.0\Uploads\transactions.csv'
+INTO TABLE transactions
+FIELDS TERMINATED BY ','
+ENCLOSED BY '"'
+LINES TERMINATED BY '\n'
+IGNORE 1 ROWS;
+
+-- STEP 4: Row Count Validation
+
+SELECT 'customers' AS table_name, COUNT(*) AS row_count FROM customers
+UNION ALL
+SELECT 'transactions' AS table_name, COUNT(*) AS row_count FROM transactions
+UNION ALL
+SELECT 'countries' AS table_name, COUNT(*) AS row_count FROM countries;
+
+-- STEP 5: Basic Data Quality Checks
+
+-- (A) Customers with missing critical fields
+SELECT *
+FROM customers
+WHERE name IS NULL
+   OR customer_type IS NULL
+   OR country_of_residence IS NULL;
+
+-- (B) Transactions with invalid amounts or missing dates
+SELECT *
+FROM transactions
+WHERE amount <= 0
+   OR trx_date IS NULL;
+
+-- (C) Transactions without matching customers (FK integrity check)
+SELECT t.*
+FROM transactions t
+LEFT JOIN customers c
+  USING (customer_id)
+WHERE c.customer_id IS NULL;
+
+-- STEP 6: Country Reference Validation
+
+-- (A) Sanctioned countries with Sanctions_Authority as N/A
+
+SELECT *
+FROM countries
+WHERE RISK='Sanctioned'
+AND Sanctions_Authority = 'N/A';
+
+-- (B) Sanctioned countries with Sanction_Type as N/A
+
+SELECT *
+FROM countries
+WHERE Risk = 'Sanctioned'
+AND Sanction_Type = 'N/A';
+
+-- (C) Transactions referencing unknown countries
+SELECT DISTINCT beneficiary_country
+FROM transactions
+WHERE UPPER(beneficiary_country) NOT IN (
+    SELECT UPPER(Country) FROM countries
+);
+
+SELECT DISTINCT country_of_residence
+FROM customers
+WHERE UPPER(country_of_residence) NOT IN (
+    SELECT UPPER(Country) FROM countries
+);
+
+-- STEP 7: Duplicate Detection
+
+-- (A) Potential duplicate customers
+SELECT Name, DOB_DOI, COUNT(*) AS duplicate_count
+FROM customers
+GROUP BY Name, DOB_DOI
+HAVING COUNT(*) > 1;
+
+-- Duplicate transactions
+SELECT Trx_id, COUNT(*) AS duplicate_count
+FROM transactions
+GROUP BY trx_id
+HAVING COUNT(*) > 1;
+
+-- Duplicate Transactions Identified and Fixed
+
+-- STEP 8: Summary Metrics for Audit Trail
+
+-- High-level transaction statistics
+SELECT
+    COUNT(*) AS total_transactions,
+    MIN(amount) AS min_amount,
+    MAX(amount) AS max_amount,
+    AVG(amount) AS avg_amount
+FROM transactions;
+
+-- Transaction volume by currency
+SELECT currency, COUNT(*) AS trx_count, SUM(amount) AS total_amount
+FROM transactions
+GROUP BY currency
+ORDER BY total_amount DESC;
+
+-- END OF DATA INGESTION FILE
