@@ -1,0 +1,129 @@
+-- =====================================================
+-- 03_data_quality.sql
+-- AML | Sanctions | KYC — AML Data Analyst Portfolio Project
+-- Purpose: Data cleansing, standardization, and validation
+-- Author: Savio Kedari
+-- =====================================================
+
+USE aml_project;
+
+-- STEP 1: Standardize Text Fields
+
+UPDATE customers
+SET 
+    Name = UPPER(TRIM(Name)),
+    Country_Of_Residence = UPPER(TRIM(Country_Of_Residence)),
+    Country_Of_Incorporation = UPPER(TRIM(Country_Of_Incorporation)),
+    Occupation_Business_Type = UPPER(TRIM(Occupation_Business_Type));
+
+UPDATE transactions
+SET 
+    Remitter_name = UPPER(TRIM(Remitter_name)),
+    Beneficiary_name = UPPER(TRIM(Beneficiary_name)),
+    Remitter_country = UPPER(TRIM(Remitter_country)),
+    Beneficiary_country = UPPER(TRIM(Beneficiary_country)),
+    Channel = UPPER(TRIM(Channel));
+
+UPDATE customers
+SET Risk_Category = UPPER(TRIM(REPLACE(REPLACE(Risk_Category, '\r', ''), '\n', '')))
+WHERE Risk_Category IS NOT NULL;
+
+-- STEP 3: Age & DOB Consistency Checks
+
+UPDATE customers
+SET age = NULL
+WHERE age < 0 OR age > 120;
+
+SELECT DOB_DOI, AGE
+FROM CUSTOMERS;
+
+-- DOB_DOI vs Age discrepancy check
+
+SELECT 
+  customer_id,
+  DOB_DOI,
+  AGE AS stored_age,
+  TIMESTAMPDIFF(YEAR, DOB_DOI, CURDATE()) AS calculated_age,
+  CASE 
+    WHEN AGE = TIMESTAMPDIFF(YEAR, DOB_DOI, CURDATE()) THEN 'MATCH'
+    ELSE 'MISMATCH'
+  END AS age_check
+FROM customers;
+
+-- STEP 4: Transaction Amount Sanity Checks
+
+-- Flag unusually large transactions for AML review
+SELECT *
+FROM transactions
+WHERE amount > 1000000;
+
+SELECT C.Name, T.*
+FROM CUSTOMERS C
+JOIN TRANSACTIONS T
+USING (customer_id)
+WHERE customer_type = 'individual'
+AND amount > 1000000
+ORDER BY amount DESC;
+
+-- STEP 5: Currency Code Validation
+
+SELECT DISTINCT currency
+FROM transactions
+WHERE currency IS NULL
+   OR LENGTH(currency) > 3;
+
+
+-- STEP 6: Country Reference Validation
+
+-- Transactions with beneficiary countries not in reference table
+SELECT DISTINCT beneficiary_country
+FROM transactions
+WHERE beneficiary_country NOT IN (
+    SELECT UPPER(country) FROM countries
+);
+
+-- Customers with invalid country of residence
+SELECT DISTINCT country_of_residence
+FROM customers
+WHERE country_of_residence NOT IN (
+    SELECT UPPER(country) FROM countries
+);
+
+-- STEP 7: Business-Level Duplicate Detection
+
+SELECT name, dob_doi, COUNT(*) AS duplicate_count
+FROM customers
+GROUP BY name, dob_doi
+HAVING COUNT(*) > 1;
+
+-- STEP 8: Null Critical Field Checks
+
+SELECT *
+FROM customers
+WHERE name IS NULL
+   OR customer_type IS NULL
+   OR country_of_residence IS NULL;
+
+SELECT *
+FROM transactions
+WHERE trx_date IS NULL
+   OR amount IS NULL
+   OR beneficiary_country IS NULL;
+
+-- STEP 9: Data Quality Summary Metrics
+
+SELECT 
+    'customers' AS table_name,
+    SUM(CASE WHEN country_of_residence IS NULL THEN 1 ELSE 0 END) AS missing_country,
+    SUM(CASE WHEN Risk_Category IS NULL THEN 1 ELSE 0 END) AS missing_risk
+FROM customers;
+
+SELECT 
+    'transactions' AS table_name,
+    SUM(CASE WHEN amount <= 0 THEN 1 ELSE 0 END) AS invalid_amounts,
+    SUM(CASE WHEN beneficiary_country IS NULL THEN 1 ELSE 0 END) AS missing_beneficiary_country
+FROM transactions;
+
+
+-- END OF DATA QUALITY SCRIPT
+
