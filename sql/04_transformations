@@ -1,0 +1,150 @@
+
+-- =====================================================
+-- 04_transformations.sql
+-- AML | Sanctions | KYC — AML Data Analyst Portfolio Project
+-- Purpose: Data transformations & feature engineering
+-- Author: Savio Kedari
+-- =====================================================
+
+USE aml_project;
+
+-- CREATE WORKING TABLE
+
+CREATE TABLE working_table_transactions AS
+SELECT * FROM transactions;
+	
+
+-- STEP 1: Add Derived Columns
+
+ALTER TABLE working_table_transactions
+ADD COLUMN amount_cad DECIMAL(20,2),
+ADD COLUMN high_risk_country_flag VARCHAR(3),
+ADD COLUMN cross_border_flag VARCHAR(3);
+
+-- STEP 2: Currency Normalization to CAD
+
+UPDATE working_table_transactions
+SET amount_cad =
+    CASE currency
+        WHEN 'CAD' THEN amount
+        WHEN 'USD' THEN amount * 1.36
+        WHEN 'EUR' THEN amount * 1.47
+        WHEN 'GBP' THEN amount * 1.69
+        WHEN 'AUD' THEN amount * 0.93053      -- 
+        WHEN 'MXN' THEN amount * 0.07706      -- 
+        WHEN 'SGD' THEN amount * 1.08074      -- 
+        WHEN 'CNY' THEN amount * 0.19925      -- 
+        WHEN 'JPY' THEN amount * 0.00881392   -- 
+        WHEN 'INR' THEN amount * 0.01541514   -- 
+        WHEN 'CHF' THEN amount * 1.73753550   -- 
+        WHEN 'HKD' THEN amount * 0.17838867   -- 
+        ELSE amount
+    END;
+
+-- STEP 3: High-Risk / Sanctioned Country Flag
+
+UPDATE working_table_transactions
+SET high_risk_country_flag = 'YES'
+WHERE UPPER(beneficiary_country) IN (
+    SELECT UPPER(country)
+    FROM countries
+    WHERE risk IN ('HIGH','SANCTIONED')
+);
+
+UPDATE working_table_transactions
+SET high_risk_country_flag = 'NO'
+WHERE high_risk_country_flag IS NULL;
+
+-- STEP 4: Cross-Border Transaction Flag
+
+UPDATE working_table_transactions t
+JOIN customers c ON t.customer_id = c.customer_id
+SET t.cross_border_flag =
+    CASE 
+        WHEN UPPER(t.beneficiary_country) <> UPPER(c.country_of_residence)
+        THEN 'YES'
+        ELSE 'NO'
+    END;
+
+-- STEP 5: Transaction Frequency per Customer
+
+CREATE TABLE trx_frequency AS
+SELECT 
+    customer_id,
+    COUNT(*) AS total_trx_count,
+    SUM(amount_cad) AS total_trx_volume
+FROM working_table_transactions
+GROUP BY customer_id;
+
+-- STEP 6: Rolling 30-Day Transaction Volume
+
+CREATE TABLE trx_rolling_30d AS
+SELECT
+    t1.customer_id,
+    t1.trx_date,
+    t1.amount_cad,
+    (
+        SELECT SUM(t2.amount_cad)
+        FROM working_table_transactions t2
+        WHERE t2.customer_id = t1.customer_id
+          AND t2.trx_date BETWEEN t1.trx_date - INTERVAL '30' DAY AND t1.trx_date
+    ) AS rolling_30d_volume
+FROM working_table_transactions t1;
+
+-- STEP 7: Customer-Level Risk Feature Table
+
+
+CREATE TABLE customer_risk_features AS
+SELECT
+    c.customer_id,
+    c.customer_type,
+    COUNT(t.trx_id) AS trx_count,
+    SUM(t.amount_cad) AS total_volume,
+    SUM(CASE WHEN t.high_risk_country_flag = 'YES' THEN 1 ELSE 0 END) AS high_risk_trx_count,
+    SUM(CASE WHEN t.cross_border_flag = 'YES' THEN 1 ELSE 0 END) AS cross_border_trx_count
+FROM customers c
+LEFT JOIN working_table_transactions t ON c.customer_id = t.customer_id
+GROUP BY
+    c.customer_id,
+    c.customer_type
+    ;
+
+-- STEP 8: Indexes for Performance
+
+CREATE INDEX idx_trx_amount_cad ON working_table_transactions(amount_cad);
+CREATE INDEX idx_trx_high_risk ON working_table_transactions(high_risk_country_flag);
+CREATE INDEX idx_trx_cross_border ON working_table_transactions(cross_border_flag);
+
+-- STEP 9: Behavioral Sequencing
+
+-- Behavioral sequencing per customer
+CREATE OR REPLACE VIEW customer_behavior AS
+SELECT
+    t.customer_id,
+    t.Trx_id,
+    t.Trx_date,
+    t.Amount,
+    LAG(t.Amount,1) OVER(PARTITION BY t.customer_id ORDER BY t.Trx_date) AS prev_amount,
+    LEAD(t.Amount,1) OVER(PARTITION BY t.customer_id ORDER BY t.Trx_date) AS next_amount,
+    t.Amount - LAG(t.Amount,1) OVER(PARTITION BY t.customer_id ORDER BY t.Trx_date) AS change_from_prev,
+    DATEDIFF(t.Trx_date, LAG(t.Trx_date,1) OVER(PARTITION BY t.customer_id ORDER BY t.Trx_date)) AS days_since_prev
+FROM transactions t;
+
+-- STEP 9: Concentration Analysis
+CREATE OR REPLACE VIEW customer_risk_rank AS
+SELECT
+    c.customer_id,
+    c.`name`,
+    SUM(t.Amount) AS total_volume,
+    COUNT(t.Trx_id) AS total_transactions,
+    SUM(CASE WHEN t.Flagged_trx='YES' THEN 1 ELSE 0 END) AS high_risk_trx_count,
+    RANK() OVER(ORDER BY SUM(t.Amount) DESC) AS volume_rank,
+    DENSE_RANK() OVER(ORDER BY SUM(t.Amount) DESC) AS volume_dense_rank,
+    RANK() OVER(ORDER BY SUM(CASE WHEN t.Flagged_trx='YES' THEN 1 ELSE 0 END) DESC) AS high_risk_rank,
+    DENSE_RANK() OVER(ORDER BY SUM(CASE WHEN t.Flagged_trx='YES' THEN 1 ELSE 0 END) DESC) AS high_risk_dense_rank
+FROM customers c
+LEFT JOIN transactions t
+ON c.customer_id = t.customer_id
+GROUP BY c.customer_id, c.`name`;
+
+-- END OF TRANSFORMATIONS SCRIPT
