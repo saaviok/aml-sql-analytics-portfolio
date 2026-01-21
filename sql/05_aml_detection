@@ -1,0 +1,132 @@
+-- =====================================================
+-- 05_aml_detection.sql
+-- AML | Sanctions | KYC — AML Data Analyst Portfolio Project
+-- Purpose: AML typology detection, alerts & risk scoring
+-- Author: Savio Kedari
+-- =====================================================
+
+USE aml_project;
+
+-- SCENARIO 1: High-Value Transactions to Sanctioned Countries
+-- Regulatory focus: Sanctions evasion
+
+CREATE TABLE aml_sanctions_alerts AS
+SELECT
+    t.trx_id,
+    t.customer_id,
+    t.trx_date,
+    t.amount_cad,
+    t.beneficiary_country,
+    'SANCTIONED_COUNTRY_HIGH_VALUE' AS alert_type
+FROM working_table_transactions t
+JOIN countries c
+    ON UPPER(t.beneficiary_country) = UPPER(c.country)
+WHERE c.risk = 'SANCTIONED'
+  AND t.amount_cad >= 10000;
+
+-- SCENARIO 2: Structuring / Smurfing Detection
+-- Multiple near-threshold transactions in a single day
+
+CREATE TABLE aml_structuring_alerts AS
+SELECT
+    customer_id,
+    DATE(trx_date) AS trx_day,
+    COUNT(*) AS trx_count,
+    SUM(amount_cad) AS total_amount,
+    'STRUCTURING_SMURFING' AS alert_type
+FROM working_table_transactions
+WHERE amount_cad BETWEEN 9000 AND 9999
+GROUP BY customer_id, DATE(trx_date)
+HAVING COUNT(*) >= 3;
+
+-- SCENARIO 3: Rapid Movement of Funds (Velocity Risk)
+-- High frequency or high value in 24 hours
+
+CREATE TABLE aml_velocity_alerts AS
+SELECT
+    customer_id,
+    COUNT(*) AS trx_count_24h,
+    SUM(amount_cad) AS total_amount_24h,
+    'RAPID_FUNDS_MOVEMENT' AS alert_type
+FROM working_table_transactions
+WHERE trx_date >= NOW() - INTERVAL 1 DAY
+GROUP BY customer_id
+HAVING COUNT(*) >= 5
+    OR SUM(amount_cad) >= 50000;
+
+-- SCENARIO 4: Excessive Cross-Border Activity
+-- Jurisdictional risk exposure
+
+CREATE TABLE aml_cross_border_alerts AS
+SELECT
+    customer_id,
+    COUNT(*) AS cross_border_trx_count,
+    SUM(amount_cad) AS total_cross_border_amount,
+    'EXCESSIVE_CROSS_BORDER_ACTIVITY' AS alert_type
+FROM working_table_transactions
+WHERE cross_border_flag = 'YES'
+GROUP BY customer_id
+HAVING COUNT(*) >= 10
+    OR SUM(amount_cad) >= 75000;
+
+-- SCENARIO 5: Dormant Account Reactivation
+-- No activity for 180+ days, then sudden movement
+
+
+CREATE TABLE aml_dormant_account_alerts AS
+SELECT
+    t.customer_id,
+    MIN(t.trx_date) AS reactivation_date,
+    SUM(t.amount_cad) AS reactivation_amount,
+    'DORMANT_ACCOUNT_REACTIVATION' AS alert_type
+FROM working_table_transactions t
+JOIN (
+    SELECT customer_id
+    FROM working_table_transactions
+    GROUP BY customer_id
+    HAVING DATEDIFF(MAX(trx_date), MIN(trx_date)) >= 180
+) d
+    ON t.customer_id = d.customer_id
+GROUP BY t.customer_id;
+
+-- SCENARIO 6: Composite Customer Risk Scoring
+-- Combines volume, high-risk exposure & PEP status
+
+
+CREATE TABLE aml_customer_risk_score AS
+SELECT
+    c.customer_id,
+    c.customer_type,
+    COALESCE(f.total_trx_count, 0) AS trx_count,
+    COALESCE(f.total_trx_volume, 0) AS total_volume,
+    COALESCE(r.high_risk_trx_count, 0) AS high_risk_trx_count,
+    (
+        (COALESCE(f.total_trx_volume, 0) / 10000) +
+        (COALESCE(r.high_risk_trx_count, 0) * 5)
+    ) AS composite_risk_score
+FROM customers c
+LEFT JOIN trx_frequency f
+    ON c.customer_id = f.customer_id
+LEFT JOIN customer_risk_features r
+    ON c.customer_id = r.customer_id;
+
+
+-- SCENARIO 7: Manual Review Queue
+-- Customers breaching risk threshold
+
+
+CREATE TABLE aml_manual_review_queue AS
+SELECT
+    customer_id,
+    composite_risk_score,
+    CASE
+        WHEN composite_risk_score >= 80 THEN 'HIGH'
+        WHEN composite_risk_score BETWEEN 40 AND 79 THEN 'MEDIUM'
+        ELSE 'LOW'
+    END AS risk_rating,
+    'MANUAL_REVIEW_REQUIRED' AS review_status
+FROM aml_customer_risk_score
+WHERE composite_risk_score >= 40;
+
+-- END OF AML DETECTION SCRIPT
+
