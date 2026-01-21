@@ -1,0 +1,117 @@
+-- =====================================================
+-- 06_reporting_views.sql
+-- AML | Sanctions | KYC — AML Data Analyst Portfolio Project
+-- Purpose: Power BI–optimized reporting views
+-- Author: Cornerstone
+-- =====================================================
+
+USE aml_project;
+
+-- VIEW 1: Consolidated AML Alerts View
+-- Single alert feed for dashboards
+
+CREATE OR REPLACE VIEW v_aml_alerts_consolidated AS
+SELECT
+    trx_id,
+    customer_id,
+    trx_date,
+    amount_cad,
+    beneficiary_country,
+    alert_type
+FROM aml_sanctions_alerts
+
+UNION ALL
+
+SELECT
+    NULL AS trx_id,
+    customer_id,
+    trx_day AS trx_date,
+    total_amount AS amount_cad,
+    NULL AS beneficiary_country,
+    alert_type
+FROM aml_structuring_alerts
+
+UNION ALL
+
+SELECT
+    NULL AS trx_id,
+    customer_id,
+    NOW() AS trx_date,
+    total_amount_24h AS amount_cad,
+    NULL AS beneficiary_country,
+    alert_type
+FROM aml_velocity_alerts
+
+UNION ALL
+
+SELECT
+    NULL AS trx_id,
+    customer_id,
+    reactivation_date AS trx_date,
+    reactivation_amount AS amount_cad,
+    NULL AS beneficiary_country,
+    alert_type
+FROM aml_dormant_account_alerts;
+
+
+-- VIEW 2: Customer Risk Overview (MAIN DASHBOARD VIEW)
+-- One row per customer
+
+CREATE OR REPLACE VIEW v_customer_risk_overview AS
+SELECT
+    c.customer_id,
+    c.customer_type,
+    c.country_of_residence,
+    r.trx_count,
+    r.total_volume,
+    r.high_risk_trx_count,
+    r.composite_risk_score,
+    CASE
+        WHEN r.composite_risk_score >= 80 THEN 'HIGH'
+        WHEN r.composite_risk_score BETWEEN 40 AND 79 THEN 'MEDIUM'
+        ELSE 'LOW'
+    END AS risk_rating,
+    COUNT(a.alert_type) AS total_alerts
+FROM aml_customer_risk_score r
+JOIN customers c
+    ON r.customer_id = c.customer_id
+LEFT JOIN v_aml_alerts_consolidated a
+    ON r.customer_id = a.customer_id
+GROUP BY
+    c.customer_id,
+    c.customer_type,
+    c.country_of_residence,
+    r.trx_count,
+    r.total_volume,
+    r.high_risk_trx_count,
+    r.composite_risk_score;
+
+-- =====================================================
+-- VIEW 3: AML Alerts Summary by Type
+-- Ideal for bar charts & trends
+-- =====================================================
+
+CREATE OR REPLACE VIEW v_aml_alerts_by_type AS
+SELECT
+    alert_type,
+    COUNT(*) AS alert_count,
+    SUM(amount_cad) AS total_alert_amount
+FROM v_aml_alerts_consolidated
+GROUP BY alert_type;
+
+-- =====================================================
+-- VIEW 4: High-Risk Customers (Investigator Queue)
+-- =====================================================
+
+CREATE OR REPLACE VIEW v_high_risk_customers AS
+SELECT
+    customer_id,
+    customer_type,
+    country_of_residence,
+    composite_risk_score,
+    risk_rating,
+    total_alerts
+FROM v_customer_risk_overview
+WHERE risk_rating = 'HIGH';
+
+-- END OF REPORTING VIEWS
